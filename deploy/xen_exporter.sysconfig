@@ -1,0 +1,4 @@
+# Additional xen_exporter command-line arguments for systemd unit.
+# Example:
+# OPTIONS="--web.listen-address=:9120 --collector.xenctrl.interval=5s"
+OPTIONS="--web.listen-address=:9120"

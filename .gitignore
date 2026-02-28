@@ -1,5 +1,5 @@
 # Binaries
-xen_exporter
+/xen_exporter
 *.exe
 *.exe~
 *.dll
@@ -24,3 +24,6 @@ go.work.sum
 
 # Logs
 *.log
+
+# Packaging output
+dist/

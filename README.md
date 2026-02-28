@@ -19,9 +19,14 @@ This keeps scrape latency and CPU overhead low.
 
 ## Build
 
+For EL7 targets, use Go **1.17** (last Go release supporting EL7/glibc baseline).
+
 ```bash
 CGO_ENABLED=1 go build -o xen_exporter ./cmd/xen_exporter
 ```
+
+Note: RPM spec does not enforce a distro `golang` package dependency at build
+time, so external Go toolchains (for example tarball-installed Go 1.17) work.
 
 ## Build `libxenctrl` from Xen source (minimal libs-only path)
 
@@ -73,6 +78,27 @@ cd /path/to/xen_exporter
 CGO_ENABLED=1 go build -o xen_exporter ./cmd/xen_exporter
 ```
 
+## RPM packaging
+
+The repository includes RPM packaging files under `packaging/rpm/`.
+
+```bash
+# Build binary only
+make build
+
+# Create source tarball for rpmbuild
+make rpm-tarball
+
+# Build binary RPM + SRPM into dist/rpm/
+make rpm
+```
+
+Alternative wrapper:
+
+```bash
+packaging/rpm/build-rpm.sh
+```
+
 ## Run
 
 ```bash
@@ -98,3 +124,23 @@ CGO_ENABLED=1 go build -o xen_exporter ./cmd/xen_exporter
 
 - metrics: `/metrics`
 - health: `/-/healthy`
+
+## Systemd (EL7-style)
+
+The RPM installs:
+
+- unit file: `/usr/lib/systemd/system/xen_exporter.service`
+- environment file: `/etc/sysconfig/xen_exporter`
+
+Adjust runtime flags in `/etc/sysconfig/xen_exporter` via `OPTIONS=\"...\"`, then:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now xen_exporter
+sudo systemctl status xen_exporter
+```
+
+## License
+
+This project is licensed under **GNU General Public License v3.0 (GPLv3)**.
+See [LICENSE](LICENSE).
