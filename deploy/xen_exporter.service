@@ -1,0 +1,14 @@
+[Unit]
+Description=Prometheus Xen Exporter
+After=network.target
+
+[Service]
+Type=simple
+User=root
+ExecStart=/usr/local/bin/xen_exporter --web.listen-address=:9120
+Restart=on-failure
+RestartSec=2
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

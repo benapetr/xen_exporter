@@ -1,0 +1,26 @@
+# Binaries
+xen_exporter
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Go build/test artifacts
+*.test
+*.out
+cover.out
+coverage.out
+
+# Go workspace
+go.work
+go.work.sum
+
+# Editor/OS noise
+.DS_Store
+*.swp
+*.swo
+*~
+
+# Logs
+*.log
