@@ -12,7 +12,6 @@ It is designed to mirror key xapi `xcp-rrdd-cpu` semantics without consuming RRD
 
 Collectors run in background loops and cache results. Scrapes only serialize cached samples.
 
-- `/proc/stat` collector: default every `1s`
 - `libxenctrl` collector: default every `5s`
 
 This keeps scrape latency and CPU overhead low.
@@ -111,13 +110,11 @@ packaging/rpm/build-rpm.sh
 
 - `--web.listen-address` (default `:9120`)
 - `--web.metrics-path` (default `/metrics`)
-- `--collector.procstat.interval` (default `1s`)
 - `--collector.xenctrl.interval` (default `5s`)
 
 ## Runtime requirements on dom0
 
-- Xen headers and library for build: `xenctrl.h`, `libxenctrl` (development package)
-- read access to `/proc/stat`
+- Xen headers and libraries for build: `xenctrl.h`, `libxenctrl`, `libxenstore` (development packages)
 - sufficient privileges to query Xen domain stats (root recommended)
 
 ## Endpoints
