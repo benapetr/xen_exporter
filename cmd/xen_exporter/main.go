@@ -16,10 +16,9 @@ import (
 
 func main() {
 	var (
-		listenAddr       = flag.String("web.listen-address", ":9120", "Address to listen on")
-		metricsPath      = flag.String("web.metrics-path", "/metrics", "Path under which to expose metrics")
-		procInterval     = flag.Duration("collector.procstat.interval", time.Second, "Background collection interval for /proc/stat")
-		xenctrlInterval  = flag.Duration("collector.xenctrl.interval", 5*time.Second, "Background collection interval for libxenctrl polling")
+		listenAddr      = flag.String("web.listen-address", ":9120", "Address to listen on")
+		metricsPath     = flag.String("web.metrics-path", "/metrics", "Path under which to expose metrics")
+		xenctrlInterval = flag.Duration("collector.xenctrl.interval", 5*time.Second, "Background collection interval for libxenctrl polling")
 	)
 	flag.Parse()
 
@@ -27,7 +26,6 @@ func main() {
 	defer cancel()
 
 	allCollectors := []collectors.Collector{
-		collectors.NewProcStatCollector(*procInterval),
 		collectors.NewXenctrlCollector(*xenctrlInterval),
 	}
 	for _, c := range allCollectors {

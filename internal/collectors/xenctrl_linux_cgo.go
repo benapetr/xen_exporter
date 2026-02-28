@@ -1,4 +1,5 @@
 //go:build linux && cgo
+// +build linux,cgo
 
 package collectors
 
@@ -7,6 +8,7 @@ package collectors
 #include <stdlib.h>
 #include <stdint.h>
 #include <string.h>
+#include <limits.h>
 
 #include <xenctrl.h>
 #include <xen/domctl.h>
@@ -21,7 +23,14 @@ typedef struct {
     uint32_t runnable_vcpus;
 } xen_domain_sample;
 
-static int xen_collect_domains(xen_domain_sample **out, int *count, int *nr_cpus) {
+typedef struct {
+    uint32_t cpu;
+    uint64_t idletime_ns;
+} xen_pcpu_sample;
+
+static int xen_collect_all(
+    xen_domain_sample **domains_out, int *domains_count, int *nr_cpus,
+    xen_pcpu_sample **pcpus_out, int *pcpus_count) {
     int i;
     xc_interface *xch = xc_interface_open(NULL, NULL, 0);
     if (!xch) {
@@ -49,8 +58,8 @@ static int xen_collect_domains(xen_domain_sample **out, int *count, int *nr_cpus
         return -4;
     }
 
-    xen_domain_sample *samples = calloc((size_t)n, sizeof(xen_domain_sample));
-    if (!samples) {
+    xen_domain_sample *domain_samples = calloc((size_t)n, sizeof(xen_domain_sample));
+    if (!domain_samples) {
         free(infos);
         xc_interface_close(xch);
         return -5;
@@ -58,33 +67,84 @@ static int xen_collect_domains(xen_domain_sample **out, int *count, int *nr_cpus
 
     for (i = 0; i < n; i++) {
         uint32_t v;
-        samples[i].domid = infos[i].domain;
-        samples[i].cpu_time_ns = infos[i].cpu_time;
-        samples[i].max_vcpu_id = infos[i].max_vcpu_id;
-        samples[i].nr_online_vcpus = infos[i].nr_online_vcpus;
-        samples[i].flags = infos[i].flags;
-        memcpy(samples[i].handle, infos[i].handle, 16);
-
         uint32_t runnable = 0;
-        for (v = 0; v <= infos[i].max_vcpu_id; v++) {
-            xc_vcpuinfo_t vinfo;
-            if (xc_vcpu_getinfo(xch, infos[i].domain, (int)v, &vinfo) == 0) {
-                if (vinfo.online && !vinfo.blocked) {
-                    runnable++;
+        domain_samples[i].domid = infos[i].domain;
+        domain_samples[i].cpu_time_ns = infos[i].cpu_time;
+        domain_samples[i].max_vcpu_id = infos[i].max_vcpu_id;
+        domain_samples[i].nr_online_vcpus = infos[i].nr_online_vcpus;
+        domain_samples[i].flags = infos[i].flags;
+        memcpy(domain_samples[i].handle, &infos[i].handle, sizeof(domain_samples[i].handle));
+
+        // Some domains can report an invalid/sentinel max_vcpu_id (for example
+        // UINT_MAX). Keep iteration bounded to avoid wraparound/pathological
+        // loops in the collector.
+        if (infos[i].nr_online_vcpus > 0 &&
+            infos[i].max_vcpu_id != UINT_MAX &&
+            infos[i].max_vcpu_id < 4096) {
+            for (v = 0; v <= infos[i].max_vcpu_id; v++) {
+                xc_vcpuinfo_t vinfo;
+                if (xc_vcpu_getinfo(xch, infos[i].domain, (int)v, &vinfo) == 0) {
+                    if (vinfo.online && !vinfo.blocked) {
+                        runnable++;
+                    }
                 }
             }
         }
-        samples[i].runnable_vcpus = runnable;
+        domain_samples[i].runnable_vcpus = runnable;
     }
 
+    int max_cpus = *nr_cpus;
+    xc_cpuinfo_t *cpuinfos = calloc((size_t)max_cpus, sizeof(xc_cpuinfo_t));
+    if (!cpuinfos) {
+        free(domain_samples);
+        free(infos);
+        xc_interface_close(xch);
+        return -6;
+    }
+
+    int got_cpus = max_cpus;
+    if (xc_getcpuinfo(xch, max_cpus, cpuinfos, &got_cpus) != 0) {
+        free(cpuinfos);
+        free(domain_samples);
+        free(infos);
+        xc_interface_close(xch);
+        return -7;
+    }
+    if (got_cpus < 0) {
+        got_cpus = 0;
+    } else if (got_cpus > max_cpus) {
+        got_cpus = max_cpus;
+    }
+
+    xen_pcpu_sample *pcpu_samples = calloc((size_t)got_cpus, sizeof(xen_pcpu_sample));
+    if (!pcpu_samples) {
+        free(cpuinfos);
+        free(domain_samples);
+        free(infos);
+        xc_interface_close(xch);
+        return -8;
+    }
+
+    for (i = 0; i < got_cpus; i++) {
+        pcpu_samples[i].cpu = (uint32_t)i;
+        pcpu_samples[i].idletime_ns = cpuinfos[i].idletime;
+    }
+
+    free(cpuinfos);
     free(infos);
     xc_interface_close(xch);
-    *out = samples;
-    *count = n;
+    *domains_out = domain_samples;
+    *domains_count = n;
+    *pcpus_out = pcpu_samples;
+    *pcpus_count = got_cpus;
     return 0;
 }
 
 static void xen_free_domains(xen_domain_sample *samples) {
+    free(samples);
+}
+
+static void xen_free_pcpus(xen_pcpu_sample *samples) {
     free(samples);
 }
 */
@@ -104,7 +164,8 @@ import (
 type XenctrlCollector struct {
 	interval time.Duration
 	st       state
-	prev     map[string]domainPrev
+	prevDom  map[string]domainPrev
+	prevPCPU map[uint32]pcpuPrev
 }
 
 type domainPrev struct {
@@ -113,10 +174,16 @@ type domainPrev struct {
 	onlineVcpus uint32
 }
 
+type pcpuPrev struct {
+	time       time.Time
+	idleTimeNs uint64
+}
+
 func NewXenctrlCollector(interval time.Duration) *XenctrlCollector {
 	return &XenctrlCollector{
 		interval: interval,
-		prev:     make(map[string]domainPrev, 1024),
+		prevDom:  make(map[string]domainPrev, 1024),
+		prevPCPU: make(map[uint32]pcpuPrev, 256),
 	}
 }
 
@@ -147,22 +214,28 @@ func (c *XenctrlCollector) collectOnce() {
 }
 
 func (c *XenctrlCollector) read() ([]metrics.Sample, error) {
-	var ptr *C.xen_domain_sample
-	var count C.int
+	var domPtr *C.xen_domain_sample
+	var domCount C.int
 	var nrCPUs C.int
+	var pcpuPtr *C.xen_pcpu_sample
+	var pcpuCount C.int
 
-	rc := C.xen_collect_domains(&ptr, &count, &nrCPUs)
+	rc := C.xen_collect_all(&domPtr, &domCount, &nrCPUs, &pcpuPtr, &pcpuCount)
 	if rc != 0 {
-		return nil, fmt.Errorf("xen_collect_domains failed: %d", int(rc))
+		return nil, fmt.Errorf("xen_collect_all failed: %d", int(rc))
 	}
-	defer C.xen_free_domains(ptr)
+	defer C.xen_free_domains(domPtr)
+	defer C.xen_free_pcpus(pcpuPtr)
 
-	n := int(count)
+	n := int(domCount)
+	pn := int(pcpuCount)
 	now := time.Now()
-	rows := unsafe.Slice((*C.xen_domain_sample)(unsafe.Pointer(ptr)), n)
+	rows := unsafe.Slice((*C.xen_domain_sample)(unsafe.Pointer(domPtr)), n)
+	pcpuRows := unsafe.Slice((*C.xen_pcpu_sample)(unsafe.Pointer(pcpuPtr)), pn)
 
-	samples := make([]metrics.Sample, 0, n*4+8)
+	samples := make([]metrics.Sample, 0, n*4+pn+16)
 	nextPrev := make(map[string]domainPrev, n)
+	nextPrevPCPU := make(map[uint32]pcpuPrev, pn)
 
 	runningDomains := 0
 	runningVcpus := 0
@@ -201,7 +274,7 @@ func (c *XenctrlCollector) read() ([]metrics.Sample, error) {
 			},
 		)
 
-		if prev, ok := c.prev[uuid]; ok {
+		if prev, ok := c.prevDom[uuid]; ok {
 			dt := now.Sub(prev.time).Seconds()
 			if dt > 0 {
 				dcpu := float64(uint64(r.cpu_time_ns)-prev.cpuTimeNs) / 1e9
@@ -230,7 +303,47 @@ func (c *XenctrlCollector) read() ([]metrics.Sample, error) {
 		runningVcpus += int(uint32(r.runnable_vcpus))
 	}
 
-	c.prev = nextPrev
+	var sumUsage float64
+	var usedPCPUs int
+	for i := 0; i < pn; i++ {
+		row := pcpuRows[i]
+		cpuID := uint32(row.cpu)
+		labels := map[string]string{"cpu": fmt.Sprintf("%d", cpuID)}
+
+		if prev, ok := c.prevPCPU[cpuID]; ok {
+			if uint64(row.idletime_ns) >= prev.idleTimeNs {
+				dt := now.Sub(prev.time).Seconds()
+				if dt > 0 {
+					dIdle := float64(uint64(row.idletime_ns)-prev.idleTimeNs) / 1e9
+					u := 1.0 - (dIdle / dt)
+					u = math.Max(0, math.Min(1, u))
+					sumUsage += u
+					usedPCPUs++
+					samples = append(samples, metrics.Sample{
+						Name:   "xen_host_cpu_usage_ratio",
+						Help:   "Physical CPU usage ratio per CPU from Xen idletime counters; semantics align with xcp-rrdd-cpu cpuN.",
+						Type:   metrics.Gauge,
+						Value:  u,
+						Labels: labels,
+					})
+				}
+			}
+		}
+
+		nextPrevPCPU[cpuID] = pcpuPrev{time: now, idleTimeNs: uint64(row.idletime_ns)}
+	}
+
+	if usedPCPUs > 0 {
+		samples = append(samples, metrics.Sample{
+			Name:  "xen_host_cpu_avg_usage_ratio",
+			Help:  "Average physical CPU usage ratio from Xen idletime counters; semantics align with xcp-rrdd-cpu cpu_avg.",
+			Type:  metrics.Gauge,
+			Value: sumUsage / float64(usedPCPUs),
+		})
+	}
+
+	c.prevDom = nextPrev
+	c.prevPCPU = nextPrevPCPU
 
 	samples = append(samples,
 		metrics.Sample{
